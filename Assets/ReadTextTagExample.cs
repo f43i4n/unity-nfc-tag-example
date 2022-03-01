@@ -1,13 +1,9 @@
 using UnityEngine;
-using PCSC;
 using System.Threading;
-using PCSC.Monitoring;
-using PcscNfc;
-using NdefLibrary.Ndef;
-using System;
 using System.Collections.Concurrent;
 using UnityEngine.UI;
-using PCSC.Iso7816;
+using uFCoderMulti;
+using System;
 
 enum WriteResult { Success, Failure }
 
@@ -20,126 +16,221 @@ public class ReadTextTagExample : MonoBehaviour
 
     private Thread t;
 
-    bool buzzerDisabled;
+    bool stopped = false;
 
-    ResponseApdu SendCommandApdu(ICardReader reader, CommandApdu apdu)
+    private DL_STATUS reader_open()
     {
-        var sendPci = SCardPCI.GetPci(reader.Protocol);
-        var receivePci = new SCardPCI();
+        DL_STATUS status;
 
-        var receiveBuffer = new byte[256];
-        var command = apdu.ToArray();
+        uint reader_type;
+        byte[] reader_sn = new byte[8];
+        byte fw_major_ver;
+        byte fw_minor_ver;
+        byte fw_build;
+        byte hw_major;
+        byte hw_minor;
 
-        var bytesReceived = reader.Transmit(
-            sendPci,
-            command,
-            command.Length,
-            receivePci,
-            receiveBuffer,
-            receiveBuffer.Length);
-
-        var responseApdu =
-            new ResponseApdu(receiveBuffer, bytesReceived, IsoCase.Case3Short, reader.Protocol);
-
-        if (responseApdu.SW1 != (byte)SW1Code.Normal)
+        //-------------------------------------------------------
+        status = ufCoder.ReaderOpen();
+        if (status != DL_STATUS.UFR_OK)
         {
-            throw new Exception($"SW1 is {responseApdu.SW1}");
+            return status;
         }
 
-        return responseApdu;
+        //-------------------------------------------------------
+        unsafe
+        {
+            fixed (byte* f_rdsn = reader_sn)
+                status = ufCoder.GetReaderSerialDescription(f_rdsn);
+        }
+
+        unsafe
+        {
+            status |= ufCoder.GetReaderType(&reader_type);
+
+            status |= ufCoder.GetReaderHardwareVersion(&hw_major, &hw_minor);
+
+            status |= ufCoder.GetReaderFirmwareVersion(&fw_major_ver, &fw_minor_ver);
+
+            status |= ufCoder.GetBuildNumber(&fw_build);
+        }
+
+        if (status != DL_STATUS.UFR_OK)
+        {
+            return status;
+        }
+
+        //-------------------------------------------------------
+
+        Debug.Log( " SN : " + System.Text.Encoding.UTF8.GetString(reader_sn));
+
+        Debug.Log(" HW : " + (int)hw_major + "." + hw_minor);
+
+        Debug.Log(" FW : " + (fw_major_ver) + "." +
+                                (fw_minor_ver) + "." +
+                                (fw_build));
+
+        return DL_STATUS.UFR_OK;
     }
 
-    void Acr122uDisableBuzzerOutput(ICardReader reader)
+    private DLOGIC_CARD_TYPE getcardtype()
     {
-        // see 6.7. https://www.acs.com.hk/download-manual/419/API-ACR122U-2.04.pdf
-        // for documentation of the command
+        DL_STATUS status;
+        byte cardtype_val = 0;
+        DLOGIC_CARD_TYPE cardtype;
 
-        // command to read out blocks (up to 16 bytes)
-        var apdu = new CommandApdu(IsoCase.Case2Short, reader.Protocol)
+        unsafe
         {
-            CLA = 0xFF,
-            Instruction = 0,
-            P1 = 0x52,
-            P2 = 0x00,
-        };
+            status = ufCoder.GetDlogicCardType(&cardtype_val);
+        }
 
-        SendCommandApdu(reader, apdu);
+        if (status != DL_STATUS.UFR_OK)
+        {
+            cardtype_val = 0;
+        }
+
+        cardtype = (DLOGIC_CARD_TYPE)cardtype_val;
+
+        return cardtype;
+    }
+
+    private byte[] SubByteArray(byte[] sourceArray, int out_len)
+    {
+        byte[] truncArray = new byte[out_len];
+        Array.Copy(sourceArray, truncArray, truncArray.Length);
+        return truncArray;
+    }
+
+    private string read_ndef()
+    {
+        DL_STATUS result = DL_STATUS.UNKNOWN_ERROR;
+        //byte tlv_type;
+        //uint record_length;
+        //ushort bytes_read;
+
+        byte[] type = new byte[256];
+        byte[] id = new byte[256];
+        byte[] payload = new byte[1000];
+        byte type_length, id_length, tnf;
+        byte record_nr;
+        byte message_cnt, record_cnt, empty_record_cnt;
+        byte[] record_cnt_array = new byte[100];
+        DLOGIC_CARD_TYPE cardtype;
+        string ct;
+
+
+        cardtype = getcardtype();
+        // trim DL
+        // _ to spc
+        ct = String.Format("[{0:X}]", (int)cardtype);
+        ct += " " + cardtype.ToString();
+
+
+
+
+        if (cardtype == DLOGIC_CARD_TYPE.DL_NO_CARD)
+        {
+            return null;
+        }
+
+        unsafe
+        {
+            fixed (byte* pData = record_cnt_array)
+                result = ufCoder.get_ndef_record_count(&message_cnt, &record_cnt, pData, &empty_record_cnt);
+        }
+
+        if (result != DL_STATUS.UFR_OK)
+        {
+            Debug.Log("Card is not initialized");
+            return null;
+        }
+
+        uint payload_length;
+
+        for (record_nr = 1; record_nr < record_cnt + 1; record_nr++)
+        {
+            unsafe
+            {
+                fixed (byte* f_type = type)
+                fixed (byte* f_id = id)
+                fixed (byte* f_payload = payload)
+
+                    result = ufCoder.read_ndef_record(1, (byte)record_nr, &tnf, f_type, &type_length, f_id, &id_length, f_payload, &payload_length);
+            }
+
+            if (result != DL_STATUS.UFR_OK)
+            {
+                if (result == DL_STATUS.UFR_WRONG_NDEF_CARD_FORMAT)
+                    Debug.Log(" NDEF format error");
+                else if (result == DL_STATUS.UFR_NDEF_MESSAGE_NOT_FOUND)
+                    Debug.Log(" NDEF message not found");
+                else
+                    Debug.Log(" Error: " + result);
+
+                return null;
+            }
+
+            string str_payload = System.Text.Encoding.UTF8.GetString(SubByteArray(payload, (int)payload_length));
+            string str_type = System.Text.Encoding.UTF8.GetString(SubByteArray(type, (int)type_length));
+            string str_tnf = "TNF: " + System.Convert.ToString(tnf);
+            //---------------------------------------------------------------------------
+
+            string[] row = { record_nr.ToString(), str_type.ToString(), payload_length.ToString(), str_payload };
+
+            // This a bit hacky, just to get this working
+            if (str_payload.Contains("en"))
+            {
+                return str_payload.Trim().Substring(3);
+            }
+
+            return str_payload;
+        }
+
+        return null;
     }
 
     private void NfcThread()
     {
-        string[] readerNames;
-        using (var context = ContextFactory.Instance.Establish(SCardScope.System))
+
+        try
         {
-            readerNames = context.GetReaders();
-        }
+            reader_open();
 
-        using (var monitor = MonitorFactory.Instance.Create(SCardScope.System))
-        {
-            monitor.CardInserted += (sender, args) => CardInserted(args);
-            monitor.CardRemoved += (sender, args) => CardRemoved(args);
+            string last_read = null;
+            var null_reads = 0;
 
-            monitor.Start(readerNames);
-
-            try
+            while (!stopped)
             {
-                Thread.Sleep(Timeout.Infinite);
-            }
-            catch (ThreadInterruptedException)
-            {
-                // thread interrupted
-            }
-        }
-
-        void ReadOutTextTag(NfcTagReader nfcReader)
-        {
-            var rawMsg = nfcReader.ReadNdefMessage();
-            var ndefMessage = NdefMessage.FromByteArray(rawMsg);
-
-            foreach (NdefRecord record in ndefMessage)
-            {
-                if (record.CheckSpecializedType(false) == typeof(NdefTextRecord))
+                var payload = read_ndef();
+                if (payload == null)
                 {
-                    var textRecord = new NdefTextRecord(record);
-                    readQueue.Enqueue(textRecord.Text);
-                }
-            }
-        }
-
-        void WriteTextTag(NfcTagReader nfcReader, string text)
-        {
-            var record = new NdefTextRecord();
-            record.Text = text;
-            record.LanguageCode = "en";
-
-            var message = new NdefMessage();
-            message.Add(record);
-
-            nfcReader.WriteNdefMessage(message.ToByteArray());
-        }
-
-        void CardInserted(CardStatusEventArgs args)
-        {
-            try
-            {
-                using var context = ContextFactory.Instance.Establish(SCardScope.System);
-                using var rfidReader = context.ConnectReader(args.ReaderName, SCardShareMode.Shared, SCardProtocol.Any);
-
-                // we disable the buzzer on first use, as the pcsc library has no clear other way
-                if (!buzzerDisabled)
+                    // filter out some occasional errors
+                    if(++null_reads >= 5)
+                    {
+                        readQueue.Enqueue(payload);
+                        last_read = payload;
+                    }
+                } else if (payload != last_read)
                 {
-                    Acr122uDisableBuzzerOutput(rfidReader);
-                    buzzerDisabled = true;
+                    readQueue.Enqueue(payload);
+                    last_read = payload;
+                    null_reads = 0;
                 }
-
-                var nfcReader = new NfcTagReader(rfidReader);
 
                 if (writeQueue.TryDequeue(out var text))
                 {
                     var result = WriteResult.Success;
                     try
                     {
-                        WriteTextTag(nfcReader, text);
+                        if (ufCoder.erase_all_ndef_records(1) != DL_STATUS.UFR_OK)
+                        {
+                            result = WriteResult.Failure;
+                        }
+
+                        if (ufCoder.WriteNdefRecord_Text(1, text) != DL_STATUS.UFR_OK)
+                        {
+                            result = WriteResult.Failure;
+                        }
                     }
                     catch (Exception ex)
                     {
@@ -147,21 +238,12 @@ public class ReadTextTagExample : MonoBehaviour
                         Debug.Log(ex);
                     }
                     writeResultQueue.Enqueue(result);
-                } // this also reads out the tag just written here
-
-                ReadOutTextTag(nfcReader);
-
+                }
             }
-            catch (Exception)
-            {
-                // catch error
-            }
-
         }
-
-        void CardRemoved(CardStatusEventArgs args)
+        finally
         {
-            readQueue.Enqueue(null);
+            ufCoder.ReaderClose();
         }
     }
 
@@ -183,7 +265,9 @@ public class ReadTextTagExample : MonoBehaviour
 
     void OnDestroy()
     {
+        Debug.Log("on destroy");
         t.Interrupt();
+        stopped = true;
     }
 
     void Update()
