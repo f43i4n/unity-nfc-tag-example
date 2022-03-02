@@ -194,7 +194,17 @@ public class ReadTextTagExample : MonoBehaviour
 
         try
         {
-            reader_open();
+            if (reader_open() != DL_STATUS.UFR_OK)
+            {
+                Thread.Sleep(3000);
+
+                // retry one time
+                if (reader_open() != DL_STATUS.UFR_OK)
+                {
+                    Debug.Log("Could not open reader, please try again.");
+                    return;
+                }
+            }
 
             string last_read = null;
             var null_reads = 0;
