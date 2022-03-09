@@ -4,6 +4,7 @@ using System.Collections.Concurrent;
 using UnityEngine.UI;
 using uFCoderMulti;
 using System;
+using System.Threading.Tasks;
 
 enum WriteResult { Success, Failure }
 
@@ -62,7 +63,7 @@ public class ReadTextTagExample : MonoBehaviour
 
         //-------------------------------------------------------
 
-        Debug.Log( " SN : " + System.Text.Encoding.UTF8.GetString(reader_sn));
+        Debug.Log(" SN : " + System.Text.Encoding.UTF8.GetString(reader_sn));
 
         Debug.Log(" HW : " + (int)hw_major + "." + hw_minor);
 
@@ -191,6 +192,67 @@ public class ReadTextTagExample : MonoBehaviour
 
     private void NfcThread()
     {
+        string last_read = null;
+        var null_reads = 0;
+
+        void ReadTags()
+        {
+            var payload = read_ndef();
+            if (payload == null)
+            {
+                // filter out some occasional errors
+                if (++null_reads >= 5)
+                {
+                    readQueue.Enqueue(payload);
+                    last_read = payload;
+                }
+            }
+            else if (payload != last_read)
+            {
+                readQueue.Enqueue(payload);
+                last_read = payload;
+                null_reads = 0;
+            }
+        }
+
+        void WriteTags()
+        {
+            WriteResult TryWrite(string text)
+            {
+                try
+                {
+                    if (ufCoder.erase_all_ndef_records(1) != DL_STATUS.UFR_OK)
+                    {
+                        return WriteResult.Failure;
+                    }
+                    if (ufCoder.WriteNdefRecord_Text(1, text) != DL_STATUS.UFR_OK)
+                    {
+                        return WriteResult.Failure;
+                    }
+                    
+                    return WriteResult.Success;
+                }
+                catch (Exception ex)
+                {
+                    Debug.Log(ex);
+                    return WriteResult.Failure;
+                }
+            }
+
+            if (writeQueue.TryDequeue(out var text))
+            {
+                var result = WriteResult.Failure;
+                bool timeout = false;
+                Task.Delay(10000).ContinueWith(t => timeout = true);
+                while (!timeout && result == WriteResult.Failure)
+                {
+                    Thread.Sleep(100);
+
+                    result = TryWrite(text);
+                }
+                writeResultQueue.Enqueue(result);
+            }
+        }
 
         try
         {
@@ -206,49 +268,13 @@ public class ReadTextTagExample : MonoBehaviour
                 }
             }
 
-            string last_read = null;
-            var null_reads = 0;
-
             while (!stopped)
             {
-                var payload = read_ndef();
-                if (payload == null)
-                {
-                    // filter out some occasional errors
-                    if(++null_reads >= 5)
-                    {
-                        readQueue.Enqueue(payload);
-                        last_read = payload;
-                    }
-                } else if (payload != last_read)
-                {
-                    readQueue.Enqueue(payload);
-                    last_read = payload;
-                    null_reads = 0;
-                }
+                ReadTags();
 
-                if (writeQueue.TryDequeue(out var text))
-                {
-                    var result = WriteResult.Success;
-                    try
-                    {
-                        if (ufCoder.erase_all_ndef_records(1) != DL_STATUS.UFR_OK)
-                        {
-                            result = WriteResult.Failure;
-                        }
+                WriteTags();
 
-                        if (ufCoder.WriteNdefRecord_Text(1, text) != DL_STATUS.UFR_OK)
-                        {
-                            result = WriteResult.Failure;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        result = WriteResult.Failure;
-                        Debug.Log(ex);
-                    }
-                    writeResultQueue.Enqueue(result);
-                }
+                Thread.Sleep(100);
             }
         }
         finally
@@ -287,7 +313,7 @@ public class ReadTextTagExample : MonoBehaviour
             var newObject = Instantiate(ReadTagGameobject);
 
             var textComponent = newObject.GetComponent<Text>();
-            if (textComponent != null )
+            if (textComponent != null)
             {
                 textComponent.text = text;
             }
