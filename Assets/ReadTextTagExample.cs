@@ -32,7 +32,7 @@ public class ReadTextTagExample : MonoBehaviour
         byte hw_minor;
 
         //-------------------------------------------------------
-        status = ufCoder.ReaderOpen();
+        status = ufCoder.ReaderOpenEx(1, "", 0, "");
         if (status != DL_STATUS.UFR_OK)
         {
             return status;
@@ -201,7 +201,7 @@ public class ReadTextTagExample : MonoBehaviour
             if (payload == null)
             {
                 // filter out some occasional errors
-                if (++null_reads >= 5)
+                if (++null_reads >= 5 && last_read != null)
                 {
                     readQueue.Enqueue(payload);
                     last_read = payload;
@@ -308,8 +308,10 @@ public class ReadTextTagExample : MonoBehaviour
 
     void Update()
     {
-        if (readQueue.TryDequeue(out var text) && text != null)
+        if (readQueue.TryDequeue(out var text))
         {
+            text = text ?? "null";
+
             var newObject = Instantiate(ReadTagGameobject);
 
             var textComponent = newObject.GetComponent<Text>();
