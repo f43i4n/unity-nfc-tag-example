@@ -142,7 +142,9 @@ public class ReadTextTagExample : MonoBehaviour
 
         if (result != DL_STATUS.UFR_OK)
         {
+            // TODO: remove debug statements
             Debug.Log("Card is not initialized");
+            Debug.Log($"Reset Card reader: {ufCoder.ReaderReset()}");
             return null;
         }
 
@@ -292,6 +294,7 @@ public class ReadTextTagExample : MonoBehaviour
     ///  Gameobject with Text element to duplicate for showing tag read
     /// </summary>
     public GameObject ReadTagGameobject;
+    private GameObject spawned;
 
     void Start()
     {
@@ -310,19 +313,25 @@ public class ReadTextTagExample : MonoBehaviour
     {
         if (readQueue.TryDequeue(out var text))
         {
-            text = text ?? "null";
-
-            var newObject = Instantiate(ReadTagGameobject);
-
-            var textComponent = newObject.GetComponent<Text>();
-            if (textComponent != null)
+            if (text == null)
             {
-                textComponent.text = text;
+                Destroy(spawned);
             }
+            else
+            {
 
-            newObject.AddComponent<Rigidbody2D>();
+                var newObject = Instantiate(ReadTagGameobject);
 
-            newObject.transform.SetParent(ReadTagGameobject.transform.parent);
+                var textComponent = newObject.GetComponent<Text>();
+                if (textComponent != null)
+                {
+                    textComponent.text = text;
+                }
+
+                newObject.transform.SetParent(ReadTagGameobject.transform.parent);
+
+                spawned = newObject;
+            }
         }
 
         if (writeResultQueue.TryDequeue(out var result) && this.WriteTextOutput != null)
